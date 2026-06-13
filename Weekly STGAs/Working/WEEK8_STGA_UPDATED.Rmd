@@ -1,0 +1,416 @@
+---
+title: "STAT6190 - SGTA Topic G: Tests for One Continuous Variable"
+author: "Student Report"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    latex_engine: xelatex
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 8, fig.height = 4.5)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+# Introduction
+
+This report analyses the **health.csv** dataset from STAT6190. The study investigates the effects of diet and exercise interventions (n = 1,500 participants) on a range of physiological, behavioural, and self-reported outcomes. Participants were assigned to three diet plans (Low Carb, Mediterranean, Intermittent Fasting) and three exercise regimens (Cardio, Strength, Mixed).
+
+The report covers:
+
+1. Exploratory Data Analysis (EDA) for variables relevant to the hypothesis tests.
+2. Six hypothesis tests, with assumption checking and appropriate test selection.
+
+---
+
+# 1. Exploratory Data Analysis
+
+```{r load-data}
+health <- read.csv("health.csv")
+
+# Derived variables used in tests
+health <- health %>%
+  mutate(
+    chol_change    = cholesterol_after  - cholesterol_before,
+    fitness_change = fitness_score_after - fitness_score_before,
+    rt_change      = reaction_time_after - reaction_time_before
+  )
+
+dim(health)
+```
+
+## 1.1 Univariate Summaries
+
+```{r univariate-summary}
+vars_of_interest <- c("fitness_score_before", "weight_loss",
+                      "chol_change", "fitness_change",
+                      "reaction_time_before", "rt_change")
+
+health %>%
+  select(all_of(vars_of_interest)) %>%
+  summary() %>%
+  kable(caption = "Summary statistics for key variables") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+```{r eda-histograms, fig.height=8}
+health_long <- health %>%
+  select(all_of(vars_of_interest)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value")
+
+ggplot(health_long, aes(x = value)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white", alpha = 0.8) +
+  facet_wrap(~variable, scales = "free", ncol = 2) +
+  labs(title = "Distributions of key continuous variables",
+       x = NULL, y = "Count") +
+  theme_minimal()
+```
+
+```{r eda-boxplots}
+ggplot(health_long, aes(x = variable, y = value)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  labs(title = "Boxplots of key variables", x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank())
+```
+
+**Observations:**
+
+- `fitness_score_before` is centred close to 50 with a roughly symmetric, approximately normal shape.
+- `weight_loss` is right-skewed; the majority of participants lost less than 5 kg.
+- `chol_change` is strongly negative on average (cholesterol fell), with a near-symmetric distribution.
+- `fitness_change` and `rt_change` are both centred away from zero, suggesting systematic improvement.
+- `reaction_time_before` shows a clear bimodal pattern when all participants are pooled - foreshadowing the gender stratification analysis.
+
+## 1.2 Reaction Time by Gender
+
+```{r eda-rt-gender}
+health %>%
+  select(gender, reaction_time_before, reaction_time_after) %>%
+  pivot_longer(-gender) %>%
+  ggplot(aes(x = value, fill = gender)) +
+  geom_histogram(bins = 40, alpha = 0.7, position = "identity") +
+  facet_wrap(~name, scales = "free_x") +
+  labs(title = "Reaction Time before and after, by gender",
+       x = "Milliseconds", y = "Count", fill = "Gender") +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  theme_minimal()
+```
+
+```{r eda-rt-gender-stats}
+health %>%
+  group_by(gender) %>%
+  summarise(
+    n     = n(),
+    mean_RT_before  = round(mean(reaction_time_before), 2),
+    sd_RT_before    = round(sd(reaction_time_before), 2),
+    mean_RT_after   = round(mean(reaction_time_after), 2),
+    mean_RT_change  = round(mean(rt_change), 2)
+  ) %>%
+  kable(caption = "Reaction time summary by gender") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+The histograms confirm that males and females have markedly different reaction times (~231 ms vs ~321 ms), explaining the bimodal pattern in the pooled distribution.
+
+---
+
+# 2. Hypothesis Tests
+
+All tests use a significance level of **alpha = 0.05**.
+
+---
+
+## 2.1 Is the fitness score before the study equal to 50?
+
+**Hypotheses:**  
+H0: mu = 50  
+H1: mu != 50
+
+**Assumption check - Normality:**
+
+```{r q1-normality}
+shapiro.test(sample(health$fitness_score_before, 500))
+```
+
+The Shapiro-Wilk test gives p = 0.28 (on a random sample of 500), so we do not reject normality. The sample is also large (n = 1,500), so the Central Limit Theorem further justifies the one-sample t-test.
+
+```{r q1-test}
+t.test(health$fitness_score_before, mu = 50)
+```
+
+**Conclusion:** t = 1.75, p = 0.081 > 0.05. We **fail to reject H0**. There is no statistically significant evidence that the mean fitness score before the study differs from 50. The sample mean of 50.4 is consistent with a true population mean of 50.
+
+---
+
+## 2.2 Is the mean weight loss different from 5 kg?
+
+**Hypotheses:**  
+H0: mu = 5  
+H1: mu != 5
+
+**Assumption check - Normality:**
+
+```{r q2-normality}
+shapiro.test(sample(health$weight_loss, 500))
+ggplot(health, aes(x = weight_loss)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = 5, colour = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Weight loss distribution (red line = 5 kg)",
+       x = "Weight loss (kg)", y = "Count") +
+  theme_minimal()
+```
+
+The Shapiro-Wilk test gives p = 0.18; normality is plausible. With n = 1,500 the t-test is also robust to modest departures.
+
+```{r q2-test}
+t.test(health$weight_loss, mu = 5)
+```
+
+**Conclusion:** t = -58.2, p < 0.001. We **reject H0**. The mean weight loss (~ 3.63 kg) is highly significantly different from 5 kg. Participants lost substantially less than the 5 kg target on average.
+
+---
+
+## 2.3 Did participants improve their fitness scores after 8 weeks?
+
+**Hypotheses (paired, directional):**  
+H0: mu_after - mu_before = 0  
+H1: mu_after - mu_before > 0
+
+This is a **paired t-test** on `fitness_change = fitness_score_after - fitness_score_before`.
+
+**Assumption check - Normality of differences:**
+
+```{r q3-normality}
+shapiro.test(sample(health$fitness_change, 500))
+ggplot(health, aes(x = fitness_change)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = 0, colour = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of fitness score change",
+       x = "Delta  Fitness score", y = "Count") +
+  theme_minimal()
+```
+
+The Shapiro-Wilk test returns p < 0.001 for the differences, suggesting some departure from normality. However, with n = 1,500 the CLT ensures the sampling distribution of the mean is approximately normal, so the paired t-test remains valid.
+
+```{r q3-test}
+t.test(health$fitness_score_after, health$fitness_score_before,
+       paired = TRUE, alternative = "greater")
+```
+
+**Conclusion:** t = 55.3, p < 0.001. We **reject H0**. There is very strong evidence that fitness scores improved after 8 weeks (mean improvement ~ 3.46 points).
+
+---
+
+## 2.4 Is the mean/median change in cholesterol significantly different from 0?
+
+**Hypotheses:**  
+H0: mu (or median) Delta cholesterol = 0  
+H1: mu (or median) Delta cholesterol != 0
+
+**Assumption check - Normality of differences:**
+
+```{r q4-normality}
+shapiro.test(sample(health$chol_change, 500))
+ggplot(health, aes(x = chol_change)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = 0, colour = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of cholesterol change",
+       x = "Delta  Cholesterol", y = "Count") +
+  theme_minimal()
+```
+
+Shapiro-Wilk p = 0.032; there is mild evidence against normality. Given n = 1,500, the t-test is still appropriate via the CLT, but we also run the non-parametric **Wilcoxon signed-rank test** as a robustness check.
+
+```{r q4-test}
+# Parametric
+t.test(health$chol_change, mu = 0)
+
+# Non-parametric
+wilcox.test(health$chol_change, mu = 0)
+```
+
+**Conclusion:** Both tests give p < 0.001 (t = -110.7; Wilcoxon V ~ 30). We **reject H0**. Cholesterol fell significantly during the study (mean change ~ -13.5 units). The result is robust to the mild non-normality.
+
+---
+
+## 2.5 Is the reaction time at enrolment equal to 275 ms?
+
+### Why we need to stratify by gender
+
+```{r q5-normality-all}
+shapiro.test(sample(health$reaction_time_before, 500))
+
+ggplot(health, aes(x = reaction_time_before, fill = gender)) +
+  geom_histogram(bins = 50, alpha = 0.7, position = "identity") +
+  geom_vline(xintercept = 275, colour = "black", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Reaction time before study - pooled (bimodal) and by gender",
+       x = "Reaction time (ms)", y = "Count", fill = "Gender") +
+  theme_minimal()
+```
+
+The pooled distribution is strongly **bimodal** (Shapiro-Wilk p < 0.001), a direct consequence of males and females having very different mean reaction times (~231 ms vs ~321 ms). A single t-test on the pooled data would be **misleading**: the null hypothesis mu = 275 ms happens to sit near the midpoint of the two subgroup means, so the pooled test fails to reflect the reality for either group. **Stratification by gender is required.**
+
+### Normality within gender subgroups
+
+```{r q5-normality-by-gender}
+shapiro.test(health$reaction_time_before[health$gender == "Male"])
+shapiro.test(health$reaction_time_before[health$gender == "Female"])
+```
+
+Both subgroups are approximately normal (Male p = 0.92; Female p = 0.16), so a one-sample t-test is valid within each group.
+
+### Tests by gender
+
+**Hypotheses:**  
+H0: mu = 275 ms  
+H1: mu != 275 ms
+
+```{r q5-test-male}
+t.test(health$reaction_time_before[health$gender == "Male"], mu = 275)
+```
+
+```{r q5-test-female}
+t.test(health$reaction_time_before[health$gender == "Female"], mu = 275)
+```
+
+**Conclusions:**
+
+- **Males:** t = -59.1, p < 0.001. We **reject H0**. The mean male reaction time (~231 ms) is significantly *below* 275 ms.
+- **Females:** t = 48.5, p < 0.001. We **reject H0**. The mean female reaction time (~321 ms) is significantly *above* 275 ms.
+
+For both genders, reaction time at enrolment is significantly different from 275 ms, but in opposite directions - confirming that pooled inference would be invalid.
+
+---
+
+## 2.6 Has reaction time improved at the end of the study?
+
+Improvement means a *decrease* in reaction time, so we test:
+
+H0: mu_Delta  = 0  
+H1: mu_Delta  < 0  (where Delta  = RT_after - RT_before)
+
+### Normality of rt_change
+
+```{r q6-normality-all}
+shapiro.test(sample(health$rt_change, 500))
+```
+
+Shapiro-Wilk p = 0.36 for the pooled changes - normality holds. We also check within gender:
+
+```{r q6-normality-by-gender}
+shapiro.test(health$rt_change[health$gender == "Male"])
+shapiro.test(health$rt_change[health$gender == "Female"])
+```
+
+Both subgroups are normal (Male p = 0.52; Female p = 0.18).
+
+### Can we use the pooled cohort?
+
+Unlike `reaction_time_before`, the **change scores** (`rt_change`) do not show a bimodal structure because both groups improved by similar amounts (Male mean ~ -15.0 ms; Female mean ~ -15.4 ms). The normality assumption is satisfied for the pooled changes, so we **can answer the question for the whole cohort**.
+
+```{r q6-eda}
+ggplot(health, aes(x = rt_change, fill = gender)) +
+  geom_histogram(bins = 40, alpha = 0.7, position = "identity") +
+  geom_vline(xintercept = 0, colour = "black", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Distribution of reaction time change (RT_after - RT_before)",
+       x = "Delta  Reaction time (ms)", y = "Count", fill = "Gender") +
+  theme_minimal()
+```
+
+### Whole-cohort test
+
+```{r q6-test-all}
+t.test(health$rt_change, mu = 0, alternative = "less")
+```
+
+**Conclusion:** t = -57.3, p < 0.001. We **reject H0**. Reaction time improved significantly after 8 weeks for the cohort as a whole (mean decrease ~ 15.2 ms).
+
+### By-gender tests (for completeness)
+
+```{r q6-test-by-gender}
+t.test(health$rt_change[health$gender == "Male"],   mu = 0, alternative = "less")
+t.test(health$rt_change[health$gender == "Female"], mu = 0, alternative = "less")
+```
+
+Both males (t = -39.0, p < 0.001) and females (t = -42.1, p < 0.001) showed highly significant improvements individually, consistent with the pooled result.
+
+---
+
+# Summary of Results
+
+```{r summary-table, echo=FALSE}
+results <- data.frame(
+  Question = c(
+    "Fitness score before = 50?",
+    "Mean weight loss != 5 kg?",
+    "Fitness improved after 8 weeks?",
+    "Cholesterol change != 0?",
+    "RT before = 275 ms? (Male)",
+    "RT before = 275 ms? (Female)",
+    "RT improved? (whole cohort)"
+  ),
+  Test = c(
+    "One-sample t-test",
+    "One-sample t-test",
+    "Paired t-test",
+    "t-test + Wilcoxon",
+    "One-sample t-test",
+    "One-sample t-test",
+    "One-sample t-test"
+  ),
+  Statistic = c(
+    "t = 1.75",
+    "t = -58.22",
+    "t = 55.27",
+    "t = -110.71",
+    "t = -59.07",
+    "t = 48.49",
+    "t = -57.26"
+  ),
+  p.value = c(
+    "0.081",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001"
+  ),
+  Decision = c(
+    "Fail to reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(results,
+      caption = "Summary of all hypothesis tests (alpha = 0.05)",
+      booktabs = TRUE,
+      col.names = c("Question", "Test", "Statistic", "p-value", "Decision")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+---
+
+# Appendix: Session Info
+
+```{r session-info}
+sessionInfo()
+```

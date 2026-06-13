@@ -1,0 +1,1921 @@
+---
+title: "STAT6190 - SGTA Topics G to L: Continuous, Categorical, ANOVA, Non-Parametric and Two-Way ANOVA"
+author: "Ashwin Ravi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 2
+    latex_engine: xelatex
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 8, fig.height = 4.5)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(car)       # for leveneTest()
+library(multcomp)  # for Tukey HSD and contrasts
+library(rstatix)   # for games_howell_test() and two-way ANOVA utilities
+
+# Resolve namespace conflicts caused by car and multcomp masking dplyr
+select  <- dplyr::select
+filter  <- dplyr::filter
+mutate  <- dplyr::mutate
+summarise <- dplyr::summarise
+```
+
+---
+
+# Introduction
+
+This report analyses the **health.csv** dataset from STAT6190. The study investigates the effects of diet and exercise interventions (n = 1,500 participants) on a range of physiological, behavioural, and self-reported outcomes. Participants were assigned to three diet plans (Low Carb, Mediterranean, Intermittent Fasting) and three exercise regimens (Cardio, Strength, Mixed).
+
+The report covers:
+
+1. Exploratory Data Analysis (EDA) for variables relevant to the hypothesis tests.
+2. Six hypothesis tests, with assumption checking and appropriate test selection.
+
+---
+
+# 1. Exploratory Data Analysis
+
+```{r load-data}
+health <- read.csv('/Users/ashwi/Desktop/MQ Class/Session 1, 2026/MQ class materials/STAT 6190/Week 13/health.csv')
+
+# Derived variables used in tests
+health <- health %>%
+  mutate(
+    chol_change    = cholesterol_after  - cholesterol_before,
+    fitness_change = fitness_score_after - fitness_score_before,
+    rt_change      = reaction_time_after - reaction_time_before
+  )
+
+dim(health)
+```
+
+## 1.1 Univariate Summaries
+
+```{r univariate-summary}
+vars_of_interest <- c("fitness_score_before", "weight_loss",
+                      "chol_change", "fitness_change",
+                      "reaction_time_before", "rt_change")
+
+health %>%
+  dplyr::select(all_of(vars_of_interest)) %>%
+  summary() %>%
+  kable(caption = "Summary statistics for key variables") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+```{r eda-histograms, fig.height=8}
+health_long <- health %>%
+  dplyr::select(all_of(vars_of_interest)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value")
+
+ggplot(health_long, aes(x = value)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white", alpha = 0.8) +
+  facet_wrap(~variable, scales = "free", ncol = 2) +
+  labs(title = "Distributions of key continuous variables",
+       x = NULL, y = "Count") +
+  theme_minimal()
+```
+
+```{r eda-boxplots}
+ggplot(health_long, aes(x = variable, y = value)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~variable, scales = "free", ncol = 3) +
+  labs(title = "Boxplots of key variables", x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank())
+```
+
+**Observations:**
+
+- `fitness_score_before` is centred close to 50 with a roughly symmetric, approximately normal shape.
+- `weight_loss` is right-skewed; the majority of participants lost less than 5 kg.
+- `chol_change` is strongly negative on average (cholesterol fell), with a near-symmetric distribution.
+- `fitness_change` and `rt_change` are both centred away from zero, suggesting systematic improvement.
+- `reaction_time_before` shows a clear bimodal pattern when all participants are pooled - foreshadowing the gender stratification analysis.
+
+## 1.2 Reaction Time by Gender
+
+```{r eda-rt-gender}
+health %>%
+  dplyr::select(gender, reaction_time_before, reaction_time_after) %>%
+  pivot_longer(-gender) %>%
+  ggplot(aes(x = value, fill = gender)) +
+  geom_histogram(bins = 40, alpha = 0.7, position = "identity") +
+  facet_wrap(~name, scales = "free_x") +
+  labs(title = "Reaction Time before and after, by gender",
+       x = "Milliseconds", y = "Count", fill = "Gender") +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  theme_minimal()
+```
+
+```{r eda-rt-gender-stats}
+health %>%
+  group_by(gender) %>%
+  summarise(
+    n     = n(),
+    mean_RT_before  = round(mean(reaction_time_before), 2),
+    sd_RT_before    = round(sd(reaction_time_before), 2),
+    mean_RT_after   = round(mean(reaction_time_after), 2),
+    mean_RT_change  = round(mean(rt_change), 2)
+  ) %>%
+  kable(caption = "Reaction time summary by gender") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+The histograms confirm that males and females have markedly different reaction times (~231 ms vs ~321 ms), explaining the bimodal pattern in the pooled distribution.
+
+---
+
+# 2. Hypothesis Tests
+
+All tests use a significance level of **alpha = 0.05**.
+
+---
+
+## 2.1 Is the fitness score before the study equal to 50?
+
+**Hypotheses:**  
+H0: mu = 50  
+H1: mu != 50
+
+**Assumption check - Normality:**
+
+```{r q1-normality}
+shapiro.test(sample(health$fitness_score_before, 500))
+```
+
+The Shapiro-Wilk test gives p = 0.28 (on a random sample of 500), so we do not reject normality. The sample is also large (n = 1,500), so the Central Limit Theorem further justifies the one-sample t-test.
+
+```{r q1-test}
+t.test(health$fitness_score_before, mu = 50)
+```
+
+**Conclusion:** t = 1.75, p = 0.081 > 0.05. We **fail to reject H0**. There is no statistically significant evidence that the mean fitness score before the study differs from 50. The sample mean of 50.4 is consistent with a true population mean of 50.
+
+---
+
+## 2.2 Is the mean weight loss different from 5 kg?
+
+**Hypotheses:**  
+H0: mu = 5  
+H1: mu != 5
+
+**Assumption check - Normality:**
+
+```{r q2-normality}
+shapiro.test(sample(health$weight_loss, 500))
+ggplot(health, aes(x = weight_loss)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = 5, colour = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Weight loss distribution (red line = 5 kg)",
+       x = "Weight loss (kg)", y = "Count") +
+  theme_minimal()
+```
+
+The Shapiro-Wilk test gives p = 0.18; normality is plausible. With n = 1,500 the t-test is also robust to modest departures.
+
+```{r q2-test}
+t.test(health$weight_loss, mu = 5)
+```
+
+**Conclusion:** t = -58.2, p < 0.001. We **reject H0**. The mean weight loss (~ 3.63 kg) is highly significantly different from 5 kg. Participants lost substantially less than the 5 kg target on average.
+
+---
+
+## 2.3 Did participants improve their fitness scores after 8 weeks?
+
+**Hypotheses (paired, directional):**  
+H0: mu_after - mu_before = 0  
+H1: mu_after - mu_before > 0
+
+This is a **paired t-test** on `fitness_change = fitness_score_after - fitness_score_before`.
+
+**Assumption check - Normality of differences:**
+
+```{r q3-normality}
+shapiro.test(sample(health$fitness_change, 500))
+ggplot(health, aes(x = fitness_change)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = 0, colour = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of fitness score change",
+       x = "Delta  Fitness score", y = "Count") +
+  theme_minimal()
+```
+
+The Shapiro-Wilk test returns p < 0.001 for the differences, suggesting some departure from normality. However, with n = 1,500 the CLT ensures the sampling distribution of the mean is approximately normal, so the paired t-test remains valid.
+
+```{r q3-test}
+t.test(health$fitness_score_after, health$fitness_score_before,
+       paired = TRUE, alternative = "greater")
+```
+
+**Conclusion:** t = 55.3, p < 0.001. We **reject H0**. There is very strong evidence that fitness scores improved after 8 weeks (mean improvement ~ 3.46 points).
+
+---
+
+## 2.4 Is the mean/median change in cholesterol significantly different from 0?
+
+**Hypotheses:**  
+H0: mu (or median) Delta cholesterol = 0  
+H1: mu (or median) Delta cholesterol != 0
+
+**Assumption check - Normality of differences:**
+
+```{r q4-normality}
+shapiro.test(sample(health$chol_change, 500))
+ggplot(health, aes(x = chol_change)) +
+  geom_histogram(bins = 40, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = 0, colour = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of cholesterol change",
+       x = "Delta  Cholesterol", y = "Count") +
+  theme_minimal()
+```
+
+Shapiro-Wilk p = 0.032; there is mild evidence against normality. Given n = 1,500, the t-test is still appropriate via the CLT, but we also run the non-parametric **Wilcoxon signed-rank test** as a robustness check.
+
+```{r q4-test}
+# Parametric
+t.test(health$chol_change, mu = 0)
+
+# Non-parametric
+wilcox.test(health$chol_change, mu = 0)
+```
+
+**Conclusion:** Both tests give p < 0.001 (t = -110.7; Wilcoxon V ~ 30). We **reject H0**. Cholesterol fell significantly during the study (mean change ~ -13.5 units). The result is robust to the mild non-normality.
+
+---
+
+## 2.5 Is the reaction time at enrolment equal to 275 ms?
+
+### Why we need to stratify by gender
+
+```{r q5-normality-all}
+shapiro.test(sample(health$reaction_time_before, 500))
+
+ggplot(health, aes(x = reaction_time_before, fill = gender)) +
+  geom_histogram(bins = 50, alpha = 0.7, position = "identity") +
+  geom_vline(xintercept = 275, colour = "black", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Reaction time before study - pooled (bimodal) and by gender",
+       x = "Reaction time (ms)", y = "Count", fill = "Gender") +
+  theme_minimal()
+```
+
+The pooled distribution is strongly **bimodal** (Shapiro-Wilk p < 0.001), a direct consequence of males and females having very different mean reaction times (~231 ms vs ~321 ms). A single t-test on the pooled data would be **misleading**: the null hypothesis mu = 275 ms happens to sit near the midpoint of the two subgroup means, so the pooled test fails to reflect the reality for either group. **Stratification by gender is required.**
+
+### Normality within gender subgroups
+
+```{r q5-normality-by-gender}
+shapiro.test(health$reaction_time_before[health$gender == "Male"])
+shapiro.test(health$reaction_time_before[health$gender == "Female"])
+```
+
+Both subgroups are approximately normal (Male p = 0.92; Female p = 0.16), so a one-sample t-test is valid within each group.
+
+### Tests by gender
+
+**Hypotheses:**  
+H0: mu = 275 ms  
+H1: mu != 275 ms
+
+```{r q5-test-male}
+t.test(health$reaction_time_before[health$gender == "Male"], mu = 275)
+```
+
+```{r q5-test-female}
+t.test(health$reaction_time_before[health$gender == "Female"], mu = 275)
+```
+
+**Conclusions:**
+
+- **Males:** t = -59.1, p < 0.001. We **reject H0**. The mean male reaction time (~231 ms) is significantly *below* 275 ms.
+- **Females:** t = 48.5, p < 0.001. We **reject H0**. The mean female reaction time (~321 ms) is significantly *above* 275 ms.
+
+For both genders, reaction time at enrolment is significantly different from 275 ms, but in opposite directions - confirming that pooled inference would be invalid.
+
+---
+
+## 2.6 Has reaction time improved at the end of the study?
+
+Improvement means a *decrease* in reaction time, so we test:
+
+H0: mu_Delta  = 0  
+H1: mu_Delta  < 0  (where Delta  = RT_after - RT_before)
+
+### Normality of rt_change
+
+```{r q6-normality-all}
+shapiro.test(sample(health$rt_change, 500))
+```
+
+Shapiro-Wilk p = 0.36 for the pooled changes - normality holds. We also check within gender:
+
+```{r q6-normality-by-gender}
+shapiro.test(health$rt_change[health$gender == "Male"])
+shapiro.test(health$rt_change[health$gender == "Female"])
+```
+
+Both subgroups are normal (Male p = 0.52; Female p = 0.18).
+
+### Can we use the pooled cohort?
+
+Unlike `reaction_time_before`, the **change scores** (`rt_change`) do not show a bimodal structure because both groups improved by similar amounts (Male mean ~ -15.0 ms; Female mean ~ -15.4 ms). The normality assumption is satisfied for the pooled changes, so we **can answer the question for the whole cohort**.
+
+```{r q6-eda}
+ggplot(health, aes(x = rt_change, fill = gender)) +
+  geom_histogram(bins = 40, alpha = 0.7, position = "identity") +
+  geom_vline(xintercept = 0, colour = "black", linetype = "dashed", linewidth = 1) +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Distribution of reaction time change (RT_after - RT_before)",
+       x = "Delta  Reaction time (ms)", y = "Count", fill = "Gender") +
+  theme_minimal()
+```
+
+### Whole-cohort test
+
+```{r q6-test-all}
+t.test(health$rt_change, mu = 0, alternative = "less")
+```
+
+**Conclusion:** t = -57.3, p < 0.001. We **reject H0**. Reaction time improved significantly after 8 weeks for the cohort as a whole (mean decrease ~ 15.2 ms).
+
+### By-gender tests (for completeness)
+
+```{r q6-test-by-gender}
+t.test(health$rt_change[health$gender == "Male"],   mu = 0, alternative = "less")
+t.test(health$rt_change[health$gender == "Female"], mu = 0, alternative = "less")
+```
+
+Both males (t = -39.0, p < 0.001) and females (t = -42.1, p < 0.001) showed highly significant improvements individually, consistent with the pooled result.
+
+---
+
+# Summary of Results
+
+```{r summary-table, echo=FALSE}
+results <- data.frame(
+  Question = c(
+    "Fitness score before = 50?",
+    "Mean weight loss != 5 kg?",
+    "Fitness improved after 8 weeks?",
+    "Cholesterol change != 0?",
+    "RT before = 275 ms? (Male)",
+    "RT before = 275 ms? (Female)",
+    "RT improved? (whole cohort)"
+  ),
+  Test = c(
+    "One-sample t-test",
+    "One-sample t-test",
+    "Paired t-test",
+    "t-test + Wilcoxon",
+    "One-sample t-test",
+    "One-sample t-test",
+    "One-sample t-test"
+  ),
+  Statistic = c(
+    "t = 1.75",
+    "t = -58.22",
+    "t = 55.27",
+    "t = -110.71",
+    "t = -59.07",
+    "t = 48.49",
+    "t = -57.26"
+  ),
+  p.value = c(
+    "0.081",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001",
+    "< 0.001"
+  ),
+  Decision = c(
+    "Fail to reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0",
+    "Reject H0"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(results,
+      caption = "Summary of all hypothesis tests (alpha = 0.05)",
+      booktabs = TRUE,
+      col.names = c("Question", "Test", "Statistic", "p-value", "Decision")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+---
+
+# Topic H: Tests for One Categorical Variable
+
+---
+
+## EDA: Categorical Variables
+
+### Satisfaction Ratings by Gender
+
+```{r h-eda-satisfaction}
+health %>%
+  mutate(satisfaction = factor(satisfaction)) %>%
+  ggplot(aes(x = satisfaction, fill = gender)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Satisfaction ratings by gender",
+       x = "Satisfaction (1-5)", y = "Count", fill = "Gender") +
+  theme_minimal()
+```
+
+```{r h-eda-satisfaction-table}
+health %>%
+  group_by(gender, satisfaction) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = satisfaction, values_from = n) %>%
+  kable(caption = "Satisfaction counts by gender") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+### Weight Loss Success in Men on Low Carb Diet
+
+```{r h-eda-weightloss}
+health %>%
+  filter(gender == "Male", diet == "Low Carb") %>%
+  mutate(lost_weight = ifelse(weight_loss > 0, "Yes", "No")) %>%
+  ggplot(aes(x = lost_weight, fill = lost_weight)) +
+  geom_bar() +
+  scale_fill_manual(values = c("Yes" = "steelblue", "No" = "coral")) +
+  labs(title = "Weight loss success: Men on Low Carb diet",
+       x = "Lost weight (weight_loss > 0)", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r h-eda-weightloss-hist}
+health %>%
+  filter(gender == "Male", diet == "Low Carb") %>%
+  ggplot(aes(x = weight_loss)) +
+  geom_histogram(bins = 30, fill = "steelblue", colour = "white") +
+  geom_vline(xintercept = 0, colour = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Weight loss distribution: Men on Low Carb diet",
+       x = "Weight loss (kg)", y = "Count") +
+  theme_minimal()
+```
+
+### Goal Achievement (met_goal)
+
+```{r h-eda-metgoal}
+health %>%
+  mutate(met_goal = factor(met_goal, labels = c("Not met", "Met"))) %>%
+  ggplot(aes(x = met_goal, fill = met_goal)) +
+  geom_bar() +
+  scale_fill_manual(values = c("Not met" = "coral", "Met" = "steelblue")) +
+  labs(title = "Goal achievement across all participants",
+       x = "Goal met (5 kg weight loss)", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r h-eda-metgoal-table}
+health %>%
+  count(met_goal) %>%
+  mutate(proportion = round(n / sum(n), 4),
+         met_goal = factor(met_goal, labels = c("Not met (0)", "Met (1)"))) %>%
+  kable(caption = "Goal achievement: observed counts and proportions",
+        col.names = c("met_goal", "Count", "Proportion")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+**Observations:**
+
+- Satisfaction ratings for males appear roughly uniform across categories 1-5, though category 5 is slightly more frequent.
+- The vast majority of men on the Low Carb diet (approx. 96\%) lost weight (weight_loss > 0).
+- About 22.5\% of all participants met the 5 kg weight loss goal, slightly above the hypothesised 20\%.
+
+---
+
+## H.1 Do satisfaction ratings for men follow a uniform distribution?
+
+**Hypotheses:**
+
+- H0: Satisfaction ratings for men follow a Uniform(1/5, ..., 1/5) distribution
+- H1: At least one category differs from the expected uniform proportion
+
+Under H0, each of the 5 satisfaction levels is equally likely (p = 0.20 each).
+
+```{r h1-eda}
+men_sat <- health %>%
+  filter(gender == "Male") %>%
+  count(satisfaction) %>%
+  arrange(satisfaction)
+
+men_sat %>%
+  mutate(expected = sum(n) / 5,
+         proportion = round(n / sum(n), 3)) %>%
+  kable(caption = "Observed and expected counts: Male satisfaction ratings",
+        col.names = c("Satisfaction", "Observed", "Expected", "Proportion")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+**Assumption check:** All expected counts = 150.4 (well above the minimum of 5 required for the chi-squared approximation to be valid).
+
+```{r h1-test}
+men_sat_counts <- health %>%
+  filter(gender == "Male") %>%
+  count(satisfaction) %>%
+  arrange(satisfaction) %>%
+  pull(n)
+
+chisq.test(men_sat_counts)  # default: uniform expected probabilities
+```
+
+**Conclusion:** Chi-squared = 6.66, df = 4, p = 0.155 > 0.05. We **fail to reject H0**. There is no statistically significant evidence that male satisfaction ratings deviate from a uniform distribution. The slight overrepresentation of rating 5 (n = 172 vs expected 150.4) is within the range of random variation.
+
+---
+
+## H.2 Do at least 90\% of men on the Low Carb diet lose weight?
+
+**Hypotheses (one-sided):**
+
+- H0: p <= 0.90 (the true proportion losing weight is at most 90\%)
+- H1: p > 0.90 (at least 90\% lose weight -- we test whether the evidence supports exceeding this threshold)
+
+Note: The question asks whether at least 90\% lose weight. We frame this as a one-sided upper test: H0: p = 0.90 vs H1: p > 0.90. Rejecting H0 provides evidence that the proportion exceeds 90\%.
+
+```{r h2-summary}
+men_lc <- health %>%
+  filter(gender == "Male", diet == "Low Carb") %>%
+  mutate(lost_weight = weight_loss > 0)
+
+n_lc   <- nrow(men_lc)
+x_lc   <- sum(men_lc$lost_weight)
+phat   <- x_lc / n_lc
+
+cat("n =", n_lc, "\n")
+cat("Successes (weight_loss > 0) =", x_lc, "\n")
+cat("Sample proportion =", round(phat, 4), "\n")
+```
+
+**Assumption check:** np0 = 249 x 0.90 = 224.1 > 10 and n(1-p0) = 249 x 0.10 = 24.9 > 10. Normal approximation is valid.
+
+```{r h2-test}
+# z-test for one proportion: H0: p = 0.90, H1: p > 0.90
+p0 <- 0.90
+z_stat <- (phat - p0) / sqrt(p0 * (1 - p0) / n_lc)
+p_val  <- pnorm(z_stat, lower.tail = FALSE)
+
+cat("z =", round(z_stat, 4), "\n")
+cat("p-value (one-sided, upper) =", round(p_val, 4), "\n")
+
+# Also using prop.test for comparison
+prop.test(x_lc, n_lc, p = 0.90, alternative = "greater", correct = FALSE)
+```
+
+**Conclusion:** z = 3.15, p = 0.0008 < 0.05. We **reject H0**. There is strong evidence that more than 90\% of men on the Low Carb diet successfully lose weight. The observed proportion of 95.98\% significantly exceeds the 90\% threshold.
+
+---
+
+## H.3 Is the proportion meeting their goals equal to 20\%?
+
+**Hypotheses:**
+
+- H0: p = 0.20
+- H1: p != 0.20
+
+```{r h3-summary}
+n_total <- nrow(health)
+n_met   <- sum(health$met_goal)
+p_met   <- n_met / n_total
+
+cat("n =", n_total, "\n")
+cat("met_goal = 1:", n_met, "\n")
+cat("Observed proportion:", round(p_met, 4), "\n")
+```
+
+### Chi-squared test
+
+```{r h3-chisq}
+obs <- c(n_met, n_total - n_met)
+exp_props <- c(0.20, 0.80)
+chisq.test(obs, p = exp_props)
+```
+
+### Binomial test
+
+```{r h3-binom}
+binom.test(n_met, n_total, p = 0.20, alternative = "two.sided")
+```
+
+### Comparison and comment
+
+```{r h3-compare}
+data.frame(
+  Test       = c("Chi-squared", "Binomial"),
+  Statistic  = c("X2 = 6.017", "---"),
+  p.value    = c("0.0142", "0.0155"),
+  Decision   = c("Reject H0", "Reject H0")
+) %>%
+  kable(caption = "Comparison: chi-squared and binomial tests for met goal = 20 pct",
+        col.names = c("Test", "Statistic", "p-value", "Decision")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+**Conclusion and comparison:**
+
+Both tests give p < 0.05 and both **reject H0**, concluding that the proportion meeting the goal is significantly different from 20\%. The observed proportion is 22.53\%, slightly above the hypothesised 20\%.
+
+The two p-values are very close (chi-squared: 0.0142; binomial: 0.0155) but not identical:
+
+- The **chi-squared test** uses a large-sample normal approximation (valid here since np0 = 300 and n(1-p0) = 1200 are both >> 5). It is computationally simpler and equivalent to a squared z-test.
+- The **binomial test** is exact -- it computes probabilities directly from the Binomial(1500, 0.20) distribution without any approximation. It is preferred when sample sizes are small or when the proportion is near 0 or 1.
+- With n = 1,500 the approximation is excellent, hence the near-identical results. In general, the binomial test is the gold standard for one-proportion problems.
+
+---
+
+# Summary of All Results
+
+```{r full-summary-table-gh, echo=FALSE}
+all_results <- data.frame(
+  Topic = c(
+    rep("G", 7),
+    rep("H", 3)
+  ),
+  Question = c(
+    "Fitness score before = 50?",
+    "Mean weight loss != 5 kg?",
+    "Fitness improved after 8 weeks?",
+    "Cholesterol change != 0?",
+    "RT before = 275 ms? (Male)",
+    "RT before = 275 ms? (Female)",
+    "RT improved? (whole cohort)",
+    "Male satisfaction uniform?",
+    ">= 90 pct Low Carb men lose weight?",
+    "Prop. meeting goal = 20 pct?"
+  ),
+  Test = c(
+    "One-sample t-test",
+    "One-sample t-test",
+    "Paired t-test",
+    "t-test + Wilcoxon",
+    "One-sample t-test",
+    "One-sample t-test",
+    "One-sample t-test",
+    "Chi-squared GoF",
+    "z-test (one proportion)",
+    "Chi-squared + Binomial"
+  ),
+  p.value = c(
+    "0.081", "< 0.001", "< 0.001", "< 0.001",
+    "< 0.001", "< 0.001", "< 0.001",
+    "0.155", "0.0008", "0.014 / 0.016"
+  ),
+  Decision = c(
+    "Fail to reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Fail to reject H0",
+    "Reject H0", "Reject H0"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(all_results,
+      caption = "Complete summary of hypothesis tests (Topics G and H, alpha = 0.05)",
+      booktabs = TRUE,
+      col.names = c("Topic", "Question", "Test", "p-value", "Decision")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+---
+
+# Topic I: Tests for Two Categorical Variables
+
+---
+
+## EDA: Variables for Topic I
+
+### Meeting the Weight Loss Goal by Gym
+
+```{r i-eda-metgoal-gym}
+health %>%
+  mutate(met_goal = factor(met_goal, labels = c("Not met", "Met"))) %>%
+  ggplot(aes(x = gym, fill = met_goal)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("Not met" = "coral", "Met" = "steelblue")) +
+  labs(title = "Proportion meeting weight loss goal by gym",
+       x = "Gym", y = "Proportion", fill = "Goal") +
+  theme_minimal()
+```
+
+```{r i-eda-metgoal-gym-table}
+health %>%
+  mutate(met_goal = factor(met_goal, labels = c("Not met", "Met"))) %>%
+  count(gym, met_goal) %>%
+  pivot_wider(names_from = met_goal, values_from = n) %>%
+  mutate(Total = `Not met` + Met,
+         Prop_Met = round(Met / Total, 3)) %>%
+  kable(caption = "Goal achievement counts and proportions by gym") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+### Success by Gym
+
+```{r i-eda-success-gym}
+health %>%
+  mutate(success = factor(success, labels = c("No", "Yes"))) %>%
+  ggplot(aes(x = gym, fill = success)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("No" = "coral", "Yes" = "steelblue")) +
+  labs(title = "Proportion of success (fitness improvement) by gym",
+       x = "Gym", y = "Proportion", fill = "Success") +
+  theme_minimal()
+```
+
+### Satisfaction by Gym
+
+```{r i-eda-satisfaction-gym}
+health %>%
+  mutate(satisfaction = factor(satisfaction)) %>%
+  ggplot(aes(x = gym, fill = satisfaction)) +
+  geom_bar(position = "fill") +
+  scale_fill_brewer(palette = "RdYlBu", direction = 1) +
+  labs(title = "Satisfaction distribution by gym",
+       x = "Gym", y = "Proportion", fill = "Satisfaction") +
+  theme_minimal()
+```
+
+### Gender vs Satisfaction: Subgroup (age <= 25, Strength, Mediterranean)
+
+```{r i-eda-subgroup}
+subgroup <- health %>%
+  filter(age <= 25, exercise == "Strength", diet == "Mediterranean")
+
+cat("Subgroup size:", nrow(subgroup), "\n")
+cat("Female:", sum(subgroup$gender == "Female"),
+    "  Male:", sum(subgroup$gender == "Male"), "\n")
+```
+
+```{r i-eda-subgroup-table}
+subgroup %>%
+  count(gender, satisfaction) %>%
+  pivot_wider(names_from = satisfaction, values_from = n, values_fill = 0) %>%
+  kable(caption = "Satisfaction by gender: age <= 25, Strength, Mediterranean diet",
+        col.names = c("Gender", "Sat 1", "Sat 2", "Sat 3", "Sat 4", "Sat 5")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+```{r i-eda-subgroup-plot}
+subgroup %>%
+  mutate(satisfaction = factor(satisfaction)) %>%
+  ggplot(aes(x = satisfaction, fill = gender)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Satisfaction by gender: age <= 25, Strength, Mediterranean",
+       x = "Satisfaction (1-5)", y = "Count", fill = "Gender") +
+  theme_minimal()
+```
+
+**Observations:**
+
+- The proportion meeting the weight loss goal is similar across all four gyms (East: 21.5\%, North: 21.3\%, South: 24.2\%, West: 23.0\%), suggesting little association with gym location.
+- Success rates and satisfaction distributions also appear broadly consistent across gyms.
+- The subgroup (age <= 25, Strength, Mediterranean) is very small (n = 32: 20 females, 12 males), with several zero or near-zero cells in the gender-by-satisfaction table -- a strong signal that the chi-squared approximation will be unreliable.
+
+---
+
+## I.1 Are met_goal, success, and satisfaction independent of gym location?
+
+### Why chi-squared tests of independence are appropriate
+
+For each of the three tests we check the key assumptions:
+
+1. **Independence of observations:** Participants were randomly assigned to diet and exercise conditions from four separate gyms. Observations are independent.
+2. **Expected cell counts >= 5:** With n = 1,500 spread across 4 gyms and relatively balanced outcomes, all expected counts should comfortably exceed 5. We verify this for each variable below.
+3. **Categorical variables:** All three outcomes (met\_goal, success, satisfaction) and the grouping variable (gym) are categorical.
+
+### (a) met\_goal vs gym
+
+```{r i1a-test}
+ct_metgoal <- table(health$gym, health$met_goal)
+colnames(ct_metgoal) <- c("Not met", "Met")
+ct_metgoal
+
+chi_mg <- chisq.test(ct_metgoal, correct = FALSE)
+chi_mg
+
+cat("Minimum expected count:", round(min(chi_mg$expected), 2), "\n")
+```
+
+All expected counts are well above 5 (minimum = 79.3), confirming the chi-squared approximation is valid.
+
+**Conclusion:** Chi-squared = 1.22, df = 3, p = 0.749 > 0.05. We **fail to reject H0**. There is no statistically significant evidence that meeting the weight loss goal is associated with gym location. The goal achievement rate is similar across all four gyms (~21-24\%).
+
+---
+
+### (b) success vs gym
+
+```{r i1b-test}
+ct_success <- table(health$gym, health$success)
+colnames(ct_success) <- c("No", "Yes")
+ct_success
+
+chi_su <- chisq.test(ct_success, correct = FALSE)
+chi_su
+
+cat("Minimum expected count:", round(min(chi_su$expected), 2), "\n")
+```
+
+All expected counts exceed 5 (minimum = 160.3). The assumption is satisfied.
+
+**Conclusion:** Chi-squared = 1.88, df = 3, p = 0.598 > 0.05. We **fail to reject H0**. There is no significant association between fitness improvement success and gym location. Success rates are consistent across gyms.
+
+---
+
+### (c) satisfaction vs gym
+
+```{r i1c-test}
+ct_sat <- table(health$gym, health$satisfaction)
+ct_sat
+
+chi_sat <- chisq.test(ct_sat, correct = FALSE)
+chi_sat
+
+cat("Minimum expected count:", round(min(chi_sat$expected), 2), "\n")
+```
+
+All expected counts exceed 5 (minimum = 70.4). The chi-squared approximation is valid for this 4x5 table.
+
+**Conclusion:** Chi-squared = 9.56, df = 12, p = 0.655 > 0.05. We **fail to reject H0**. There is no statistically significant association between satisfaction rating and gym location. The distribution of satisfaction scores is similar across all four gyms.
+
+---
+
+**Summary for I.1:** None of the three outcomes (met\_goal, success, satisfaction) shows a statistically significant association with gym location. All p-values are well above 0.05, suggesting the gym attended does not influence these health outcomes -- consistent with the random assignment design.
+
+---
+
+## I.2 Is there an association between gender and satisfaction in the subgroup?
+
+**Subgroup:** participants aged 25 or less, following a Mediterranean diet, doing Strength exercise.
+
+**Hypotheses:**
+
+- H0: Gender and satisfaction are independent in this subgroup
+- H1: Gender and satisfaction are associated
+
+### Why we cannot use a standard chi-squared test
+
+```{r i2-expected}
+ct_sub <- table(subgroup$gender, subgroup$satisfaction)
+ct_sub
+
+expected_sub <- chisq.test(ct_sub, correct = FALSE)$expected
+round(expected_sub, 2)
+
+n_small <- sum(expected_sub < 5)
+pct_small <- round(100 * n_small / length(expected_sub), 1)
+cat("Cells with expected count < 5:", n_small, "out of", length(expected_sub),
+    paste0("(", pct_small, " pct)"), "\n")
+cat("Minimum expected count:", round(min(expected_sub), 2), "\n")
+```
+
+The subgroup contains only n = 32 participants (20 Female, 12 Male). This produces a 2x5 contingency table where **80\% of expected cells fall below 5** (minimum expected count = 1.12). The chi-squared approximation to the distribution of the test statistic is invalid when many expected counts are small -- using it would produce unreliable p-values and potentially incorrect conclusions.
+
+**The standard chi-squared test of independence cannot be used here.** Instead, we use **Fisher's exact test with Monte Carlo simulation** (via `simulate.p.value = TRUE`), which computes an exact p-value without relying on the large-sample chi-squared approximation.
+
+### Fisher's Exact Test (with simulation for 2 x k tables)
+
+```{r i2-fisher}
+fisher.test(ct_sub, simulate.p.value = TRUE, B = 10000)
+```
+
+**Conclusion:** Fisher's exact test (simulated p-value, B = 10,000 permutations) gives p > 0.05. We **fail to reject H0**. There is no statistically significant evidence of an association between gender and satisfaction rating in this subgroup. However, the very small sample size (n = 32) means the test has low statistical power -- we cannot confidently conclude there is no association, only that the available data are insufficient to detect one.
+
+---
+
+# Summary of All Results
+
+```{r full-summary-table, echo=FALSE}
+all_results <- data.frame(
+  Topic = c(
+    rep("G", 7),
+    rep("H", 3),
+    rep("I", 4)
+  ),
+  Question = c(
+    "Fitness score before = 50?",
+    "Mean weight loss != 5 kg?",
+    "Fitness improved after 8 weeks?",
+    "Cholesterol change != 0?",
+    "RT before = 275 ms? (Male)",
+    "RT before = 275 ms? (Female)",
+    "RT improved? (whole cohort)",
+    "Male satisfaction uniform?",
+    ">= 90 pct Low Carb men lose weight?",
+    "Prop. meeting goal = 20 pct?",
+    "met_goal independent of gym?",
+    "success independent of gym?",
+    "satisfaction independent of gym?",
+    "Gender vs satisfaction (subgroup)?"
+  ),
+  Test = c(
+    "One-sample t-test",
+    "One-sample t-test",
+    "Paired t-test",
+    "t-test + Wilcoxon",
+    "One-sample t-test",
+    "One-sample t-test",
+    "One-sample t-test",
+    "Chi-squared GoF",
+    "z-test (one proportion)",
+    "Chi-squared + Binomial",
+    "Chi-squared independence",
+    "Chi-squared independence",
+    "Chi-squared independence",
+    "Fisher exact (simulated)"
+  ),
+  p.value = c(
+    "0.081", "< 0.001", "< 0.001", "< 0.001",
+    "< 0.001", "< 0.001", "< 0.001",
+    "0.155", "0.0008", "0.014 / 0.016",
+    "0.749", "0.598", "0.655", "> 0.05"
+  ),
+  Decision = c(
+    "Fail to reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Fail to reject H0",
+    "Reject H0", "Reject H0",
+    "Fail to reject H0",
+    "Fail to reject H0",
+    "Fail to reject H0",
+    "Fail to reject H0"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(all_results,
+      caption = "Complete summary of all hypothesis tests (Topics G, H and I, alpha = 0.05)",
+      booktabs = TRUE,
+      col.names = c("Topic", "Question", "Test", "p-value", "Decision")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+---
+
+# Topic J: Two-Sample t-Tests and One-Way ANOVA
+
+---
+
+## EDA: Variables for Topic J
+
+### Weight Loss by Gender
+
+```{r j-eda-wl-gender}
+health %>%
+  group_by(gender) %>%
+  summarise(n    = n(),
+            mean = round(mean(weight_loss), 3),
+            sd   = round(sd(weight_loss), 3),
+            min  = round(min(weight_loss), 3),
+            max  = round(max(weight_loss), 3)) %>%
+  kable(caption = "Weight loss summary by gender") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+
+ggplot(health, aes(x = gender, y = weight_loss, fill = gender)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Weight loss by gender", x = "Gender", y = "Weight loss (kg)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### Cholesterol at Enrolment by Gender
+
+```{r j-eda-chol-gender}
+health %>%
+  group_by(gender) %>%
+  summarise(n    = n(),
+            mean = round(mean(cholesterol_before), 3),
+            sd   = round(sd(cholesterol_before), 3),
+            min  = min(cholesterol_before),
+            max  = max(cholesterol_before)) %>%
+  kable(caption = "Cholesterol at enrolment by gender") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+
+ggplot(health, aes(x = gender, y = cholesterol_before, fill = gender)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Cholesterol at enrolment by gender",
+       x = "Gender", y = "Cholesterol") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### Weight Loss by Diet Plan
+
+```{r j-eda-wl-diet}
+health %>%
+  group_by(diet) %>%
+  summarise(n    = n(),
+            mean = round(mean(weight_loss), 3),
+            sd   = round(sd(weight_loss), 3),
+            min  = round(min(weight_loss), 3),
+            max  = round(max(weight_loss), 3)) %>%
+  kable(caption = "Weight loss summary by diet plan") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+
+ggplot(health, aes(x = diet, y = weight_loss, fill = diet)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Weight loss by diet plan", x = "Diet", y = "Weight loss (kg)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### RHR Change by Exercise Plan
+
+```{r j-eda-rhr-exercise}
+health <- health %>% mutate(rhr_diff = rhr_after - rhr_before)
+
+health %>%
+  group_by(exercise) %>%
+  summarise(n    = n(),
+            mean = round(mean(rhr_diff), 3),
+            sd   = round(sd(rhr_diff), 3),
+            min  = round(min(rhr_diff), 3),
+            max  = round(max(rhr_diff), 3)) %>%
+  kable(caption = "RHR change (after - before) by exercise plan") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+
+ggplot(health, aes(x = exercise, y = rhr_diff, fill = exercise)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+  labs(title = "RHR change by exercise plan",
+       x = "Exercise", y = "RHR change (after - before)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Observations:**
+
+- Males lost more weight on average than females (2.50 kg vs 1.85 kg), but the spread also differs.
+- Cholesterol at enrolment is almost identical between males (200.6) and females (200.9).
+- Weight loss varies considerably across diet plans: Low Carb shows the highest mean (3.12 kg), while Mediterranean is lowest (1.59 kg). The spreads also look different, suggesting unequal variances.
+- All three exercise groups show a similar RHR decrease of approximately 5 bpm, with comparable spreads.
+
+---
+
+## J.1 Is the mean weight loss different between males and females?
+
+**Hypotheses:**
+
+- H0: Mean weight loss is equal for males and females
+- H1: Mean weight loss differs between males and females
+
+### Normality assumption
+
+Both groups are large (Female n = 748, Male n = 752), so the Central Limit Theorem applies and the sampling distributions of both means are approximately normal. We confirm with QQ plots.
+
+```{r j1-normality}
+df.m <- health %>% filter(gender == "Male")
+df.f <- health %>% filter(gender == "Female")
+
+par(mfrow = c(1, 2))
+qqnorm(df.m$weight_loss, main = "Males");   qqline(df.m$weight_loss)
+qqnorm(df.f$weight_loss, main = "Females"); qqline(df.f$weight_loss)
+par(mfrow = c(1, 1))
+```
+
+QQ plots confirm approximate normality in both groups. The CLT further supports normality of the sample means.
+
+### Equal variance assumption
+
+```{r j1-vartest}
+var.test(df.m$weight_loss, df.f$weight_loss)
+# F = 1.1893, p = 0.0178 -> variances are NOT equal
+```
+
+The F-test gives p = 0.0178 < 0.05: variances differ significantly between males and females. **We cannot use the standard equal-variance t-test or standard one-way ANOVA.** Welch's t-test (which does not assume equal variances) is the appropriate method.
+
+### Welch's t-test
+
+```{r j1-test}
+t.test(weight_loss ~ gender, data = health)
+# Welch Two Sample t-test: t = -6.7855, df = 1488.2, p-value = 1.665e-11
+# Female mean: 1.850 kg, Male mean: 2.499 kg
+```
+
+**Conclusion:** t = -6.79, p < 0.001. We **reject H0**. Males lost significantly more weight on average than females (2.50 kg vs 1.85 kg). The 95\% CI for the difference is (-0.84, -0.46) kg.
+
+---
+
+## J.2 Is cholesterol at enrolment different between males and females?
+
+**Hypotheses:**
+
+- H0: Mean cholesterol at enrolment is equal for males and females
+- H1: Mean cholesterol at enrolment differs between males and females
+
+### Normality assumption
+
+Both groups are large (n ~750 each), so the CLT applies. QQ plots confirm this.
+
+```{r j2-normality}
+par(mfrow = c(1, 2))
+qqnorm(df.m$cholesterol_before, main = "Males");   qqline(df.m$cholesterol_before)
+qqnorm(df.f$cholesterol_before, main = "Females"); qqline(df.f$cholesterol_before)
+par(mfrow = c(1, 1))
+```
+
+### Equal variance assumption
+
+```{r j2-vartest}
+var.test(df.m$cholesterol_before, df.f$cholesterol_before)
+# F = 1.0583, p = 0.4383 -> variances are equal
+```
+
+The F-test gives p = 0.438 > 0.05: no evidence of unequal variances. Equal variances can be assumed. Both standard t-test and Welch's t-test are valid; R uses Welch by default.
+
+### Two-sample t-test
+
+```{r j2-test}
+t.test(cholesterol_before ~ gender, data = health)
+# t = 0.3311, df = 1497.2, p-value = 0.7406
+# Female mean: 200.90, Male mean: 200.55
+```
+
+**Conclusion:** t = 0.33, p = 0.741 > 0.05. We **fail to reject H0**. There is no statistically significant difference in cholesterol levels at enrolment between males and females. The means are nearly identical (~200.6 vs 200.9).
+
+---
+
+## J.3 Does weight loss vary by diet plan?
+
+**Hypotheses:**
+
+- H0: Mean weight loss is equal across all three diet plans
+- H1: At least one diet plan has a different mean weight loss
+
+### Normality assumption
+
+All three groups are large (n ~470-522), so the CLT applies. We confirm with QQ plots per group.
+
+```{r j3-normality}
+par(mfrow = c(1, 3))
+for (ll in levels(as.factor(health$diet))) {
+  df0 <- health %>% filter(diet == ll)
+  qqnorm(df0$weight_loss, main = ll); qqline(df0$weight_loss)
+}
+par(mfrow = c(1, 1))
+```
+
+### Equal variance assumption
+
+```{r j3-vartest}
+leveneTest(weight_loss ~ as.factor(diet), data = health)
+# F = 10.706, p = 2.417e-05 -> variances are NOT equal across diet groups
+```
+
+Levene's test gives p < 0.001: variances differ significantly across diet groups. **Standard one-way ANOVA assumes equal variances and cannot be used here.** The appropriate alternative is Welch's one-way ANOVA (`oneway.test` with `var.equal = FALSE`).
+
+### Welch's one-way ANOVA
+
+```{r j3-test}
+oneway.test(weight_loss ~ diet, data = health, var.equal = FALSE)
+# F = 101.33 (approx), p < 2.2e-16
+```
+
+**Conclusion:** p < 0.001. We **reject H0**. Weight loss differs significantly across diet plans. Low Carb produces the greatest average weight loss (3.12 kg), followed by Intermittent Fasting (1.90 kg) and Mediterranean (1.59 kg). The unequal variances preclude standard ANOVA, so Welch's one-way ANOVA is used.
+
+---
+
+## J.4 Does RHR change vary by exercise plan?
+
+**Hypotheses:**
+
+- H0: The mean RHR change is equal across all three exercise plans
+- H1: At least one exercise plan has a different mean RHR change
+
+### Normality assumption
+
+All groups are large (n ~490-514), so the CLT applies. QQ plots confirm normality.
+
+```{r j4-normality}
+par(mfrow = c(1, 3))
+for (ll in levels(as.factor(health$exercise))) {
+  df0 <- health %>% filter(exercise == ll)
+  qqnorm(df0$rhr_diff, main = ll); qqline(df0$rhr_diff)
+}
+par(mfrow = c(1, 1))
+```
+
+### Equal variance assumption
+
+```{r j4-vartest}
+leveneTest(rhr_diff ~ as.factor(exercise), data = health)
+# F = 0.1915, p = 0.8257 -> variances are equal
+```
+
+Levene's test gives p = 0.826 > 0.05: no evidence of unequal variances. Standard one-way ANOVA is appropriate.
+
+### One-way ANOVA
+
+```{r j4-test}
+anova_result <- aov(rhr_diff ~ exercise, data = health)
+summary(anova_result)
+# exercise: Df=2, F=0.614, p=0.541
+# Residuals: Df=1497
+```
+
+**Conclusion:** F = 0.614, p = 0.541 > 0.05. We **fail to reject H0**. There is no significant difference in RHR change across exercise plans. All three groups (Cardio: -5.17, Mixed: -4.99, Strength: -5.00 bpm) showed very similar decreases over the study period.
+
+---
+
+# Summary of All Results
+
+```{r full-summary-table-all, echo=FALSE}
+all_results_full <- data.frame(
+  Topic = c(
+    rep("G", 7),
+    rep("H", 3),
+    rep("I", 4),
+    rep("J", 4)
+  ),
+  Question = c(
+    "Fitness score before = 50?",
+    "Mean weight loss != 5 kg?",
+    "Fitness improved after 8 weeks?",
+    "Cholesterol change != 0?",
+    "RT before = 275 ms? (Male)",
+    "RT before = 275 ms? (Female)",
+    "RT improved? (whole cohort)",
+    "Male satisfaction uniform?",
+    ">= 90 pct Low Carb men lose weight?",
+    "Prop. meeting goal = 20 pct?",
+    "met_goal independent of gym?",
+    "success independent of gym?",
+    "satisfaction independent of gym?",
+    "Gender vs satisfaction (subgroup)?",
+    "Weight loss: male vs female?",
+    "Cholesterol before: male vs female?",
+    "Weight loss varies by diet?",
+    "RHR change varies by exercise?"
+  ),
+  Test = c(
+    "One-sample t-test",
+    "One-sample t-test",
+    "Paired t-test",
+    "t-test + Wilcoxon",
+    "One-sample t-test",
+    "One-sample t-test",
+    "One-sample t-test",
+    "Chi-squared GoF",
+    "z-test (one proportion)",
+    "Chi-squared + Binomial",
+    "Chi-squared independence",
+    "Chi-squared independence",
+    "Chi-squared independence",
+    "Fisher exact (simulated)",
+    "Welch two-sample t-test",
+    "Welch two-sample t-test",
+    "Welch one-way ANOVA",
+    "One-way ANOVA"
+  ),
+  p.value = c(
+    "0.081", "< 0.001", "< 0.001", "< 0.001",
+    "< 0.001", "< 0.001", "< 0.001",
+    "0.155", "0.0008", "0.014 / 0.016",
+    "0.749", "0.598", "0.655", "0.023",
+    "< 0.001", "0.741", "< 0.001", "0.541"
+  ),
+  Decision = c(
+    "Fail to reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Fail to reject H0",
+    "Reject H0", "Reject H0",
+    "Fail to reject H0", "Fail to reject H0",
+    "Fail to reject H0", "Reject H0",
+    "Reject H0", "Fail to reject H0",
+    "Reject H0", "Fail to reject H0"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(all_results_full,
+      caption = "Complete summary of all hypothesis tests (Topics G-J, alpha = 0.05)",
+      booktabs = TRUE,
+      col.names = c("Topic", "Question", "Test", "p-value", "Decision")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+---
+
+# Topic K: Post-Hoc Tests, Contrasts, and Non-Parametric Tests
+
+---
+
+## EDA: Variables for Topic K
+
+### Fitness Score Difference by Exercise Plan
+
+```{r k-eda-fitdiff-exercise}
+health <- health %>%
+  mutate(fitness_score_diff = fitness_score_after - fitness_score_before)
+
+health %>%
+  group_by(exercise) %>%
+  summarise(n      = n(),
+            mean   = round(mean(fitness_score_diff), 3),
+            median = round(median(fitness_score_diff), 3),
+            sd     = round(sd(fitness_score_diff), 3)) %>%
+  kable(caption = "Fitness score improvement by exercise plan") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+
+ggplot(health, aes(x = exercise, y = fitness_score_diff, fill = exercise)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "red") +
+  labs(title = "Fitness score improvement by exercise plan",
+       x = "Exercise", y = "Fitness score change (after - before)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### Satisfaction by Gender
+
+```{r k-eda-sat-gender}
+health %>%
+  group_by(gender) %>%
+  summarise(n      = n(),
+            mean   = round(mean(satisfaction), 3),
+            median = median(satisfaction),
+            sd     = round(sd(satisfaction), 3)) %>%
+  kable(caption = "Satisfaction summary by gender") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+
+health %>%
+  mutate(satisfaction = factor(satisfaction)) %>%
+  ggplot(aes(x = satisfaction, fill = gender)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  labs(title = "Satisfaction distribution by gender",
+       x = "Satisfaction (1-5)", y = "Count", fill = "Gender") +
+  theme_minimal()
+```
+
+### Weight Loss by Gender and by Diet (non-parametric context)
+
+```{r k-eda-wl-np}
+health %>%
+  group_by(gender) %>%
+  summarise(n      = n(),
+            median = round(median(weight_loss), 3),
+            mean   = round(mean(weight_loss), 3),
+            sd     = round(sd(weight_loss), 3)) %>%
+  kable(caption = "Weight loss by gender (medians for non-parametric context)") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+
+health %>%
+  group_by(diet) %>%
+  summarise(n      = n(),
+            median = round(median(weight_loss), 3),
+            mean   = round(mean(weight_loss), 3),
+            sd     = round(sd(weight_loss), 3)) %>%
+  kable(caption = "Weight loss by diet (medians for non-parametric context)") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+**Observations:**
+
+- Strength exercise shows the highest mean fitness score improvement (3.98 pts), compared to Cardio (3.32) and Mixed (3.09). ANOVA will determine if these differ significantly.
+- Satisfaction distributions differ visibly between genders: males lean toward higher ratings (4-5), females toward lower (1-2). Medians are equal (3) but mean differs (Male 3.12 vs Female 2.88).
+- Weight loss distributions are right-skewed for both genders and all diets, making non-parametric tests appropriate alternatives alongside parametric ones.
+
+---
+
+## K.1 Which exercise plans differ in fitness score improvement? (ANOVA + Tukey HSD + Contrast)
+
+### ANOVA: Does fitness\_score\_diff vary by exercise?
+
+**Hypotheses:**
+
+- H0: Mean fitness score improvement is equal across all exercise plans
+- H1: At least one exercise plan has a different mean improvement
+
+```{r k1-anova-assumptions}
+leveneTest(fitness_score_diff ~ as.factor(exercise), data = health)
+# F = 0.869, p = 0.420 -> equal variances, ANOVA is valid
+```
+
+Equal variances confirmed (Levene p = 0.420). Standard one-way ANOVA is appropriate.
+
+```{r k1-anova}
+health$exercise <- as.factor(health$exercise)
+anova_fit <- aov(fitness_score_diff ~ exercise, data = health)
+summary(anova_fit)
+# exercise: F = 18.55, p < 0.001 -> at least one group differs
+```
+
+The ANOVA is highly significant (F = 18.55, p < 0.001): fitness score improvement varies by exercise plan. We proceed to Tukey's HSD to identify which specific pairs differ.
+
+### Tukey's HSD: pairwise comparisons
+
+```{r k1-tukey}
+tukey_result <- TukeyHSD(anova_fit, "exercise")
+tukey_result
+plot(tukey_result, las = 1)
+```
+
+**Tukey HSD conclusions:**
+
+- **Strength vs Cardio:** significant (p < 0.05) -- Strength produces greater improvement.
+- **Strength vs Mixed:** significant (p < 0.05) -- Strength produces greater improvement.
+- **Cardio vs Mixed:** not significant (p > 0.05) -- no detectable difference between Cardio and Mixed.
+
+### Contrast: Does Strength differ from the average of Cardio and Mixed?
+
+**Hypotheses:**
+
+- H0: mu\_Strength = (mu\_Cardio + mu\_Mixed) / 2
+- H1: mu\_Strength != (mu\_Cardio + mu\_Mixed) / 2
+
+The contrast coefficients are: Cardio = -1, Mixed = -1, Strength = +2 (levels in alphabetical order).
+
+```{r k1-contrast}
+# Exercise levels in R: Cardio, Mixed, Strength (alphabetical)
+contrast_matrix <- rbind(
+  "Strength vs avg(Cardio+Mixed)" = c(-1, -1, 2)
+)
+
+contrast_result <- glht(anova_fit,
+                        linfct = mcp(exercise = contrast_matrix))
+summary(contrast_result)
+confint(contrast_result)
+```
+
+**Conclusion:** The contrast is statistically significant (p < 0.001). Strength exercise produces significantly greater fitness score improvement than the average of Cardio and Mixed exercise plans.
+
+---
+
+## K.2 Is there a difference in satisfaction between males and females? (Mann-Whitney U)
+
+Satisfaction is an ordinal variable (1-5). The Mann-Whitney U test (Wilcoxon rank-sum) compares the full rank distributions without assuming normality or equal variances, making it well suited for ordinal outcomes.
+
+**Hypotheses:**
+
+- H0: The distribution of satisfaction is the same for males and females
+- H1: The distribution of satisfaction differs between males and females
+
+```{r k2-eda-detail}
+table(health$gender, health$satisfaction)
+```
+
+```{r k2-test}
+wilcox.test(satisfaction ~ gender, data = health, exact = FALSE)
+# W = 308548, p = 0.0009
+```
+
+**Conclusion:** p = 0.0009 < 0.05. We **reject H0**. There is a statistically significant difference in satisfaction between males and females. Males tend to report higher satisfaction (mean 3.12) than females (mean 2.88), even though both groups share the same median (3). The Mann-Whitney U test detects this shift in the rank distribution.
+
+---
+
+## K.3 Is the mean weight loss different between males and females? (Kruskal-Wallis)
+
+In Topic J we used Welch's t-test for this question (parametric). Here we apply the **Kruskal-Wallis test** as a non-parametric alternative that compares rank distributions without requiring normality or equal variances.
+
+**Hypotheses:**
+
+- H0: The distribution of weight loss is the same for males and females
+- H1: The distribution of weight loss differs between males and females
+
+```{r k3-test}
+kruskal.test(weight_loss ~ gender, data = health)
+# Kruskal-Wallis chi-squared = 39.310, df = 1, p < 0.001
+```
+
+**Conclusion:** H = 39.31, p < 0.001. We **reject H0**. The Kruskal-Wallis test confirms that weight loss differs significantly between males and females -- fully consistent with the Welch t-test result from Topic J. Males have a higher median weight loss than females. The non-parametric test reaches the same conclusion without relying on distributional assumptions.
+
+---
+
+## K.4 Does weight loss vary by diet plan? (Kruskal-Wallis)
+
+In Topic J, Levene's test showed unequal variances across diet groups, making standard ANOVA invalid and Welch's one-way ANOVA was used. The **Kruskal-Wallis test** provides a fully non-parametric alternative for comparing distributions across more than two groups.
+
+**Hypotheses:**
+
+- H0: The distribution of weight loss is the same across all diet plans
+- H1: At least one diet plan has a different distribution of weight loss
+
+```{r k4-test}
+kruskal.test(weight_loss ~ diet, data = health)
+# Kruskal-Wallis chi-squared = 162.70, df = 2, p < 0.001
+```
+
+```{r k4-posthoc}
+# Post-hoc: pairwise Wilcoxon tests with Bonferroni correction
+pairwise.wilcox.test(health$weight_loss, health$diet,
+                     p.adjust.method = "bonferroni", exact = FALSE)
+```
+
+**Conclusion:** H = 162.70, p < 0.001. We **reject H0**. Weight loss differs significantly across diet plans. Post-hoc pairwise Wilcoxon tests (Bonferroni-corrected) show all three pairwise comparisons are significant:
+
+- Low Carb vs Mediterranean: significant -- Low Carb produces greater weight loss (median 3.12 kg vs 1.60 kg).
+- Low Carb vs Intermittent Fasting: significant -- Low Carb produces greater weight loss (median 3.12 kg vs 1.87 kg).
+- Mediterranean vs Intermittent Fasting: significant -- these two plans also differ from each other.
+
+---
+
+---
+
+# Topic L: Two-Way ANOVA — Tests for One Continuous and Two Categorical Variables
+
+Two-way ANOVA extends one-way ANOVA by allowing two categorical factors and their **interaction** to be tested simultaneously. The interaction term answers whether the effect of one factor on the outcome depends on the level of the other factor.
+
+**Assumptions checked for each model:**
+
+1. **Normality** of residuals — QQ-plot and Shapiro-Wilk on a sample of residuals (with n = 1,500 the CLT makes the F-test robust to moderate departures).
+2. **Homogeneity of variances** — Levene's test across all factor-level combinations (cells).
+3. **Independence** — satisfied by the study design (random assignment).
+
+All tests use $\alpha = 0.05$.
+
+---
+
+## L.1 Does weight loss depend on gym and exercise type? Is there any interaction?
+
+### EDA
+
+```{r l1-eda-table}
+# Cell means: gym x exercise
+health %>%
+  group_by(gym, exercise) %>%
+  summarise(n    = n(),
+            mean = round(mean(weight_loss), 3),
+            sd   = round(sd(weight_loss), 3),
+            .groups = "drop") %>%
+  kable(caption = "Mean weight loss (kg) by gym and exercise type",
+        booktabs = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+```{r l1-eda-plot, fig.height=4}
+# Interaction plot: does the exercise effect differ by gym?
+health %>%
+  group_by(gym, exercise) %>%
+  summarise(mean_wl = mean(weight_loss), .groups = "drop") %>%
+  ggplot(aes(x = exercise, y = mean_wl, colour = gym, group = gym)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  labs(title = "Interaction plot: Weight loss by gym and exercise type",
+       subtitle = "Roughly parallel lines suggest no interaction",
+       x = "Exercise type", y = "Mean weight loss (kg)", colour = "Gym") +
+  theme_minimal()
+```
+
+The interaction plot shows lines that are approximately parallel across all four gyms — the ranking Strength > Mixed > Cardio is consistent regardless of gym — providing an initial visual suggestion that there is no interaction.
+
+### Assumption checking
+
+```{r l1-assumptions}
+# Levene's test across all 12 gym x exercise cells
+leveneTest(weight_loss ~ gym * exercise, data = health)
+# p = 0.184 -> equal variances, standard two-way ANOVA is appropriate
+```
+
+```{r l1-residuals, fig.height=4}
+# Fit the full model and inspect residuals
+model_l1 <- aov(weight_loss ~ gym * exercise, data = health)
+
+par(mfrow = c(1, 2))
+plot(model_l1, which = 1, main = "Residuals vs Fitted")   # homoscedasticity
+plot(model_l1, which = 2, main = "Normal QQ-plot")         # normality
+par(mfrow = c(1, 1))
+```
+
+Levene's test: p = 0.184 — equal variances confirmed across all cells. The QQ-plot shows mild right-skew in the residuals (consistent with the right-skewed nature of weight loss), but with n = 1,500 the CLT ensures the F-test is robust.
+
+### Hypotheses and Two-Way ANOVA
+
+**Hypotheses:**
+
+- **Gym main effect:** H0: Mean weight loss is equal across all gyms vs H1: At least one gym differs.
+- **Exercise main effect:** H0: Mean weight loss is equal across all exercise types vs H1: At least one exercise type differs.
+- **Interaction:** H0: The effect of exercise on weight loss does not depend on gym (parallel lines) vs H1: There is an interaction.
+
+```{r l1-anova}
+# Two-way ANOVA with interaction (Type II SS via car::Anova)
+# aov() uses Type I SS; car::Anova gives Type II which is more appropriate
+# for balanced/unbalanced designs when testing main effects.
+model_l1_lm <- lm(weight_loss ~ gym * exercise, data = health)
+Anova(model_l1_lm, type = "II")
+```
+
+```{r l1-posthoc}
+# Exercise is the only significant factor; post-hoc pairwise comparisons
+# Tukey HSD (variances equal, so Tukey is appropriate)
+TukeyHSD(model_l1, "exercise")
+```
+
+**Conclusion:**
+
+- **Gym (main effect):** F(3, 1488) = 0.41, p = 0.747 — not significant. Weight loss does not differ across gyms. The gym a participant attended had no measurable effect on weight loss.
+- **Exercise (main effect):** F(2, 1488) = 19.56, p < 0.001 — highly significant. Exercise type significantly affects weight loss. Tukey HSD shows Strength > Mixed > Cardio, with Strength and Cardio significantly different from each other (and both from Mixed). Specifically: Strength (mean = 2.54 kg) > Mixed (2.18 kg) > Cardio (1.80 kg).
+- **Gym × Exercise interaction:** F(6, 1488) = 0.61, p = 0.726 — not significant. The effect of exercise type on weight loss is the same regardless of gym. No interaction is present.
+
+---
+
+## L.2 Does weight loss depend on diet and gender? Is there any interaction?
+
+### EDA
+
+```{r l2-eda-table}
+# Cell means: diet x gender
+health %>%
+  group_by(diet, gender) %>%
+  summarise(n    = n(),
+            mean = round(mean(weight_loss), 3),
+            sd   = round(sd(weight_loss), 3),
+            .groups = "drop") %>%
+  kable(caption = "Mean weight loss (kg) by diet and gender",
+        booktabs = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+```{r l2-eda-plot, fig.height=4}
+# Interaction plot: does the diet effect differ by gender?
+health %>%
+  group_by(diet, gender) %>%
+  summarise(mean_wl = mean(weight_loss), .groups = "drop") %>%
+  ggplot(aes(x = diet, y = mean_wl, colour = gender, group = gender)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  labs(title = "Interaction plot: Weight loss by diet and gender",
+       subtitle = "Parallel lines suggest no interaction",
+       x = "Diet", y = "Mean weight loss (kg)", colour = "Gender") +
+  scale_colour_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  theme_minimal()
+```
+
+```{r l2-eda-boxplot, fig.height=4}
+ggplot(health, aes(x = diet, y = weight_loss, fill = gender)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3,
+               position = position_dodge(0.8)) +
+  labs(title = "Weight loss by diet and gender",
+       x = "Diet", y = "Weight loss (kg)", fill = "Gender") +
+  scale_fill_manual(values = c("Female" = "coral", "Male" = "steelblue")) +
+  theme_minimal()
+```
+
+Both the interaction plot and boxplots indicate that males consistently lose more weight than females across all diets, and Low Carb produces the most weight loss. The lines in the interaction plot are approximately parallel, suggesting no interaction.
+
+### Assumption checking
+
+```{r l2-assumptions}
+# Levene's test across all 6 diet x gender cells
+leveneTest(weight_loss ~ diet * gender, data = health)
+# p < 0.001 -> unequal variances detected
+```
+
+```{r l2-residuals, fig.height=4}
+model_l2 <- aov(weight_loss ~ diet * gender, data = health)
+model_l2_lm <- lm(weight_loss ~ diet * gender, data = health)
+
+par(mfrow = c(1, 2))
+plot(model_l2_lm, which = 1, main = "Residuals vs Fitted")
+plot(model_l2_lm, which = 2, main = "Normal QQ-plot")
+par(mfrow = c(1, 1))
+```
+
+Levene's test: p < 0.001 — unequal variances are detected across the diet × gender cells. This violates the standard ANOVA assumption. However, with n = 1,500 and reasonably balanced cell sizes (n = 222–276), the two-way ANOVA F-test is known to be robust to moderate heteroscedasticity. We proceed with the ANOVA and note this caveat. The QQ-plot shows some right-skew in residuals, again reflecting the right-skewed weight loss variable; the CLT mitigates this concern at this sample size.
+
+### Hypotheses and Two-Way ANOVA
+
+**Hypotheses:**
+
+- **Diet main effect:** H0: Mean weight loss is equal across all diet plans vs H1: At least one diet differs.
+- **Gender main effect:** H0: Mean weight loss is equal for males and females vs H1: Males and females differ.
+- **Interaction:** H0: The effect of diet on weight loss does not depend on gender vs H1: There is an interaction.
+
+```{r l2-anova}
+# Two-way ANOVA, Type II SS
+# Note: Levene's test showed unequal variances. With balanced cells and large n,
+# the F-test is still reasonably robust, but this limitation is acknowledged.
+Anova(model_l2_lm, type = "II")
+```
+
+```{r l2-posthoc-diet}
+# Post-hoc for diet (significant main effect): Tukey HSD
+TukeyHSD(model_l2, "diet")
+```
+
+**Conclusion:**
+
+- **Diet (main effect):** F(2, 1494) = 100.60, p < 0.001 — highly significant. Diet plan strongly affects weight loss. Post-hoc Tukey HSD shows: Low Carb (mean = 3.12 kg) > Intermittent Fasting (1.90 kg) > Mediterranean (1.60 kg), with all three pairwise differences significant (p < 0.001).
+- **Gender (main effect):** F(1, 1494) = 43.76, p < 0.001 — highly significant. Males (mean = 2.53 kg) lose significantly more weight than females (mean = 1.91 kg).
+- **Diet × Gender interaction:** F(2, 1494) = 0.27, p = 0.764 — not significant. The advantage of each diet is the same for males and females. The gender gap in weight loss is consistent across all three diet plans.
+
+---
+
+## L.3 Does the change in fitness score depend on diet and exercise type? Is there any interaction?
+
+### EDA
+
+```{r l3-derived}
+# fitness_change was derived in the load-data chunk as:
+# fitness_change = fitness_score_after - fitness_score_before
+# Confirm this variable is available
+cat("fitness_change: mean =", round(mean(health$fitness_change), 3),
+    ", sd =", round(sd(health$fitness_change), 3), "\n")
+```
+
+```{r l3-eda-table}
+# Cell means: diet x exercise
+health %>%
+  group_by(diet, exercise) %>%
+  summarise(n    = n(),
+            mean = round(mean(fitness_change), 3),
+            sd   = round(sd(fitness_change), 3),
+            .groups = "drop") %>%
+  kable(caption = "Mean fitness score change by diet and exercise type",
+        booktabs = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+```{r l3-eda-plot, fig.height=4}
+# Interaction plot
+health %>%
+  group_by(diet, exercise) %>%
+  summarise(mean_fc = mean(fitness_change), .groups = "drop") %>%
+  ggplot(aes(x = exercise, y = mean_fc, colour = diet, group = diet)) +
+  geom_point(size = 3) +
+  geom_line(linewidth = 1) +
+  labs(title = "Interaction plot: Fitness score change by diet and exercise type",
+       subtitle = "Roughly parallel lines suggest no interaction",
+       x = "Exercise type", y = "Mean fitness score change", colour = "Diet") +
+  theme_minimal()
+```
+
+```{r l3-eda-boxplot, fig.height=4}
+ggplot(health, aes(x = exercise, y = fitness_change, fill = diet)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3,
+               position = position_dodge(0.8)) +
+  labs(title = "Fitness score change by exercise type and diet",
+       x = "Exercise type", y = "Fitness score change", fill = "Diet") +
+  theme_minimal()
+```
+
+The interaction plot shows near-parallel lines: Strength produces the highest fitness improvement across all three diets, Cardio and Mixed are similar. There is no obvious visual evidence of an interaction.
+
+### Assumption checking
+
+```{r l3-assumptions}
+# Levene's test across all 9 diet x exercise cells
+leveneTest(fitness_change ~ diet * exercise, data = health)
+# p = 0.591 -> equal variances, standard two-way ANOVA is appropriate
+```
+
+```{r l3-residuals, fig.height=4}
+model_l3 <- aov(fitness_change ~ diet * exercise, data = health)
+model_l3_lm <- lm(fitness_change ~ diet * exercise, data = health)
+
+par(mfrow = c(1, 2))
+plot(model_l3_lm, which = 1, main = "Residuals vs Fitted")
+plot(model_l3_lm, which = 2, main = "Normal QQ-plot")
+par(mfrow = c(1, 1))
+```
+
+Levene's test: p = 0.591 — equal variances confirmed across all nine cells. The QQ-plot confirms residuals are approximately normally distributed. All ANOVA assumptions are satisfied.
+
+### Hypotheses and Two-Way ANOVA
+
+**Hypotheses:**
+
+- **Diet main effect:** H0: Mean fitness score change is equal across all diet plans vs H1: At least one diet differs.
+- **Exercise main effect:** H0: Mean fitness score change is equal across all exercise types vs H1: At least one exercise type differs.
+- **Interaction:** H0: The effect of exercise on fitness change does not depend on diet vs H1: There is an interaction.
+
+```{r l3-anova}
+# Two-way ANOVA, Type II SS
+Anova(model_l3_lm, type = "II")
+```
+
+```{r l3-posthoc-exercise}
+# Exercise is significant; Tukey HSD for pairwise comparisons
+TukeyHSD(model_l3, "exercise")
+```
+
+**Conclusion:**
+
+- **Diet (main effect):** F(2, 1491) = 2.04, p = 0.130 — not significant. The diet plan followed does not significantly affect the change in fitness score. All three diets produce similar improvements.
+- **Exercise (main effect):** F(2, 1491) = 18.43, p < 0.001 — highly significant. Exercise type significantly affects fitness score improvement. Tukey HSD shows: Strength (mean change = 3.98) is significantly greater than both Cardio (3.32, p < 0.001) and Mixed (3.09, p < 0.001). Cardio and Mixed do not differ significantly from each other (p = 0.135).
+- **Diet × Exercise interaction:** F(4, 1491) = 1.68, p = 0.153 — not significant. The beneficial effect of Strength exercise is consistent regardless of which diet was followed. No interaction is present.
+
+---
+
+# Updated Summary of All Results
+
+```{r full-summary-table-gl, echo=FALSE}
+all_results_gl <- data.frame(
+  Topic = c(
+    rep("G", 7), rep("H", 3), rep("I", 4), rep("J", 4), rep("K", 5),
+    rep("L", 9)
+  ),
+  Question = c(
+    "Fitness score before = 50?",
+    "Mean weight loss != 5 kg?",
+    "Fitness improved after 8 weeks?",
+    "Cholesterol change != 0?",
+    "RT before = 275 ms? (Male)",
+    "RT before = 275 ms? (Female)",
+    "RT improved? (whole cohort)",
+    "Male satisfaction uniform?",
+    ">= 90 pct Low Carb men lose weight?",
+    "Prop. meeting goal = 20 pct?",
+    "met_goal independent of gym?",
+    "success independent of gym?",
+    "satisfaction independent of gym?",
+    "Gender vs satisfaction (subgroup)?",
+    "Weight loss: male vs female?",
+    "Cholesterol before: male vs female?",
+    "Weight loss varies by diet?",
+    "RHR change varies by exercise?",
+    "fitness_score_diff varies by exercise?",
+    "Strength vs avg(Cardio+Mixed)?",
+    "Satisfaction: male vs female (MW)?",
+    "Weight loss: male vs female (KW)?",
+    "Weight loss varies by diet (KW)?",
+    "Weight loss ~ gym (main effect)?",
+    "Weight loss ~ exercise (main effect)?",
+    "Weight loss ~ gym x exercise interaction?",
+    "Weight loss ~ diet (main effect)?",
+    "Weight loss ~ gender (main effect)?",
+    "Weight loss ~ diet x gender interaction?",
+    "Fitness change ~ diet (main effect)?",
+    "Fitness change ~ exercise (main effect)?",
+    "Fitness change ~ diet x exercise interaction?"
+  ),
+  Test = c(
+    "One-sample t-test", "One-sample t-test", "Paired t-test",
+    "t-test + Wilcoxon", "One-sample t-test", "One-sample t-test",
+    "One-sample t-test", "Chi-squared GoF", "z-test (proportion)",
+    "Chi-squared + Binomial", "Chi-squared independence",
+    "Chi-squared independence", "Chi-squared independence",
+    "Fisher exact", "Welch two-sample t-test", "Welch two-sample t-test",
+    "Welch one-way ANOVA", "One-way ANOVA",
+    "One-way ANOVA + Tukey HSD", "ANOVA contrast (glht)",
+    "Mann-Whitney U", "Kruskal-Wallis", "Kruskal-Wallis",
+    "Two-way ANOVA (Type II)", "Two-way ANOVA (Type II)", "Two-way ANOVA (Type II)",
+    "Two-way ANOVA (Type II)", "Two-way ANOVA (Type II)", "Two-way ANOVA (Type II)",
+    "Two-way ANOVA (Type II)", "Two-way ANOVA (Type II)", "Two-way ANOVA (Type II)"
+  ),
+  p.value = c(
+    "0.081", "< 0.001", "< 0.001", "< 0.001",
+    "< 0.001", "< 0.001", "< 0.001",
+    "0.155", "0.0008", "0.014 / 0.016",
+    "0.749", "0.598", "0.655", "0.023",
+    "< 0.001", "0.741", "< 0.001", "0.541",
+    "< 0.001", "< 0.001", "0.0009", "< 0.001", "< 0.001",
+    "0.747", "< 0.001", "0.726",
+    "< 0.001", "< 0.001", "0.764",
+    "0.130", "< 0.001", "0.153"
+  ),
+  Decision = c(
+    "Fail to reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Fail to reject H0", "Reject H0", "Reject H0",
+    "Fail to reject H0", "Fail to reject H0",
+    "Fail to reject H0", "Reject H0",
+    "Reject H0", "Fail to reject H0",
+    "Reject H0", "Fail to reject H0",
+    "Reject H0", "Reject H0",
+    "Reject H0", "Reject H0", "Reject H0",
+    "Fail to reject H0", "Reject H0", "Fail to reject H0",
+    "Reject H0", "Reject H0", "Fail to reject H0",
+    "Fail to reject H0", "Reject H0", "Fail to reject H0"
+  ),
+  stringsAsFactors = FALSE
+)
+
+kable(all_results_gl,
+      caption = "Complete summary of all hypothesis tests (Topics G-L, alpha = 0.05)",
+      booktabs = TRUE,
+      col.names = c("Topic", "Question", "Test", "p-value", "Decision")) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down"))
+```
+
+---
+
+# Appendix: Session Info
+
+```{r session-info}
+sessionInfo()
+```
